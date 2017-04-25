@@ -1,0 +1,139 @@
+---
+title: "EDA"
+author: "Partha S Satpathy"
+date: "April 24, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, echo=TRUE}
+library(fma)
+library(psych)
+library(dplyr)
+library(lubridate)
+```
+
+```{r readData,echo=TRUE}
+path = 'C:/Users/parth/Desktop/Git/Projects/DengAI/Data/'
+train_df <- read.csv(paste(path,'dengue_features_train.csv',sep = ""),stringsAsFactors = F)
+print(c(nrow(train_df),ncol(train_df)))
+head(train_df)
+
+test_df <- read.csv(paste(path,'dengue_features_test.csv',sep = ""),stringsAsFactors = F)
+print(c(nrow(test_df),ncol(test_df)))
+head(test_df)
+
+combine_df <- rbind(train_df,test_df)
+print(c(nrow(combine_df),ncol(combine_df)))
+head(combine_df)
+```
+```{r summaryOfData,echo=TRUE}
+describe(combine_df)
+```
+
+## The summary shows that the data has a lot of NA values. Let's figure that out.
+
+```{r checkNA,echo=TRUE}
+NA_df <- is.na(combine_df)
+cols <- colnames(combine_df)
+#head(NA_df)
+for(j in 1:ncol(NA_df)){
+  print(paste(cols[j],'::',sep = ""))
+  rowNA <- vector(mode="numeric", length=0)
+  for(i in 1:nrow(NA_df)){
+    if(isTRUE(NA_df[i,j])){
+      rowNA <- c(rowNA,i)
+    }
+  }
+  print(paste('Total null values: ',length(rowNA),sep = ""))
+  print("Null values at rows:")
+  print(rowNA)
+}
+
+```
+
+From the above Analysis it is clear that first 4 columns: city, year, weekofyear, week_start_date do not have NAs. While rest 20 columns have NAs.
+Let's first Analyse the Non-NA columns as they will be helpful in imputing the NULL values for other columns.
+
+```{r analyseCity,echo=TRUE}
+u = unique(combine_df['city'])
+print("No of Unique cities: ")
+print(u)
+##We have two cities: sj and iq. Let's make this a factor.
+combine_df$city = as.factor(combine_df$city)
+
+##Let's check the distribution of the cities
+counts <- table(combine_df$city)
+print(counts)
+barplot(counts, main="City Distribution", xlab="Cities",ylab="No of records")
+
+##The above barchart shows that we have more data on sj city than iq data.
+```
+
+As we have two states, let's analyze further for the two cities separately.
+
+```{r analyseYear,echo=TRUE}
+analyseByYear <- function(temp_df,city){
+  u = unique(temp_df$year)
+  print(paste("city ",city,"::No of Unique Years: ",sep = ""))
+  print(u)
+  
+  ##Let's check the distribution of the cities
+  counts <- table(temp_df$year)
+  print(counts)
+  barplot(counts, main=paste("Year Distribution of city ",city,sep = ""), xlab="Years",ylab="No of Weeks")
+}
+cities = c('sj','iq')
+for(i in cities){
+  temp_df <- combine_df %>% filter(city==i)
+  analyseByYear(temp_df,i)
+}
+
+```
+
+So city sj has records from 1990 to 2013. For 1990 it has 35 weeks data and for 2013- 17 weeks. For all other years we have all 52 weeks data.
+For city iq- we have data from 2000 to 2013. 2000 has 26 and 2013 has 26 weeks. All others have 52 weeks data.
+
+Let's find out from which week the data starts and ends for the two cities.
+```{r analyseByweekofyear,echo=TRUE}
+printWeeks <- function(ct,startYear,endYear){
+  temp_df <- combine_df %>% filter(city == ct & year == startYear)
+  print(paste("STarting Year Weeks for city ",ct,":",sep = ""))
+  print(temp_df$weekofyear)
+  
+  temp_df <- combine_df %>% filter(city == ct & year == endYear)
+  print(paste("Ending Year Weeks for city ",ct,":",sep = ""))
+  print(temp_df$weekofyear)
+}
+
+printWeeks('sj',1990,2013)
+printWeeks('iq',2000,2013)
+```
+
+Let's check that the week start day is correct for all the rows.
+
+```{r checkWeekSTartDay,echo=TRUE}
+calcWeek <- as.list(lubridate::week(ymd(combine_df$week_start_date)))
+actualweek <- as.list(combine_df$weekofyear)
+length(setdiff(calcWeek,actualweek))
+```
+So, the week start day is correct for all rows.
+
+Now, let's start imputing NA values.
+We will start with ndvi_ne
+
+```{r imputendvi_ne,echo=TRUE}
+imputendvi_ne <- function(temp_df,city,startYear,startWeek,endWeek){
+  ndvi_ne_ts <- ts(temp_df$ndvi_ne,start=c(startYear,startWeek),end=c(2013,endWeek),frequency = 52)  
+  print(paste(city," : ",sep = ""))
+  #print(ndvi_ne_ts)
+  ts.plot(ndvi_ne_ts,col=2)
+}
+
+imputendvi_ne((combine_df %>% filter(city == 'sj')),'sj',1990,18,17)
+imputendvi_ne((combine_df %>% filter(city == 'sj')),'iq',2001,1,26)
+```
+
