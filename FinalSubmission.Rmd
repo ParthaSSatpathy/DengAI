@@ -1,0 +1,643 @@
+---
+title: "Final"
+author: "Partha S Satpathy"
+date: "May 15, 2017"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(fma)
+library(psych)
+#library(lubridate)
+library(party)
+library(randomForest)
+library(caret)
+library(tseries)
+#library(data.table)
+library(Boruta)
+library(plyr)
+library(dplyr)
+#library(pROC)
+library(Metrics)
+library(imputeTS)
+library(xgboost)
+library(smooth)
+library(Mcomp)
+#load libraries
+pkgs <- c('tidyverse', 'corrplot', 'magrittr', 'zoo', 'RColorBrewer', 'gridExtra','MASS')
+invisible(lapply(pkgs, require, character.only = T))
+```
+
+```{r}
+path = 'C:/Users/parth/Desktop/Git/Projects/DengAI/Data/'
+train_df <- read.csv(paste(path,'dengue_features_train.csv',sep = ""),stringsAsFactors = F)
+print(c(nrow(train_df),ncol(train_df)))
+head(train_df)
+
+test_df <- read.csv(paste(path,'dengue_features_test.csv',sep = ""),stringsAsFactors = F)
+print(c(nrow(test_df),ncol(test_df)))
+head(test_df)
+
+combine_df <- rbind(train_df,test_df)
+print(c(nrow(combine_df),ncol(combine_df)))
+head(combine_df)
+```
+```{r}
+describe(combine_df)
+```
+## The summary shows that the data has a lot of NA values. Let's figure that out.
+```{r}
+NA_df <- is.na(combine_df)
+cols <- colnames(combine_df)
+#head(NA_df)
+for(j in 1:ncol(NA_df)){
+  print(paste(cols[j],'::',sep = ""))
+  rowNA <- vector(mode="numeric", length=0)
+  for(i in 1:nrow(NA_df)){
+    if(isTRUE(NA_df[i,j])){
+      rowNA <- c(rowNA,i)
+    }
+  }
+  print(paste('Total null values: ',length(rowNA),sep = ""))
+  print("Null values at rows:")
+  print(rowNA)
+}
+rm(i)
+rm(j)
+```
+
+From the above Analysis it is clear that first 4 columns: city, year, weekofyear, week_start_date do not have NAs. While rest 20 columns have NAs.
+Let's first Analyse the Non-NA columns as they will be helpful in imputing the NULL values for other columns.
+
+```{r}
+u = unique(combine_df['city'])
+print("No of Unique cities: ")
+print(u)
+##We have two cities: sj and iq. Let's make this a factor.
+combine_df$city = as.factor(combine_df$city)
+
+##Let's check the distribution of the cities
+counts <- table(combine_df$city)
+print(counts)
+barplot(counts, main="City Distribution", xlab="Cities",ylab="No of records")
+
+rm(counts)
+rm(u)
+##The above barchart shows that we have more data on sj city than iq data.
+```
+
+As we have two states, let's analyze further for the two cities separately.
+
+```{r}
+analyseByYear <- function(temp_df,city){
+  u = unique(temp_df$year)
+  print(paste("city ",city,"::No of Unique Years: ",sep = ""))
+  print(u)
+  
+  ##Let's check the distribution of the cities
+  counts <- table(temp_df$year)
+  print(counts)
+  barplot(counts, main=paste("Year Distribution of city ",city,sep = ""), xlab="Years",ylab="No of Weeks")
+}
+cities = c('sj','iq')
+for(i in cities){
+  temp_df <- combine_df %>% filter(city==i)
+  analyseByYear(temp_df,i)
+}
+rm(temp_df)
+rm(i)
+```
+So city sj has records from 1990 to 2013. For 1990 it has 35 weeks data and for 2013- 17 weeks. For all other years we have all 52 weeks data.
+For city iq- we have data from 2000 to 2013. 2000 has 26 and 2013 has 26 weeks. All others have 52 weeks data.
+
+Let's find out from which week the data starts and ends for the two cities.
+
+```{r}
+printWeeks <- function(ct,startYear,endYear){
+  temp_df <- combine_df %>% filter(city == ct & year == startYear)
+  print(paste("STarting Year Weeks for city ",ct,":",sep = ""))
+  print(temp_df$weekofyear)
+  
+  temp_df <- combine_df %>% filter(city == ct & year == endYear)
+  print(paste("Ending Year Weeks for city ",ct,":",sep = ""))
+  print(temp_df$weekofyear)
+}
+
+printWeeks('sj',1990,2013)
+printWeeks('iq',2000,2013)
+```
+
+Now, let's start imputing NA values.
+We will start with ndvi_ne.
+We are going to use imputeTS package which automatically imputes the missing values.
+
+```{r}
+x <- ts(combine_df$ndvi_ne)
+plot(x)
+
+##A closer look
+plot(window(x,start=500,end=600))
+
+#The data is not linear. There are seasonality in it.
+#library(imputeTS)
+imp <- na.kalman(x)
+combine_df['ndvi_ne'] <- imp
+plotNA.imputations(x,imp,combine_df$ndvi_ne)
+
+#A closer look at the imputation plot
+plotNA.imputations(window(x,start=500,end=600),window(imp,start=500,end=600),window(combine_df$ndvi_ne,start=500,end=600))
+
+rm(imp)
+rm(x)
+```
+
+The imputation seems spot-on. 
+Let's plot time series of every feature column with missing values and check which one are linear and which are not.
+We can then write two separate functions to impute them all together.
+
+```{r}
+imp <- na.kalman(combine_df[,6:24])
+combine_df[,6:24] <- imp
+
+sum(is.na(combine_df)) ## Value 0 shows no NA values
+
+rm(imp)
+```
+
+```{r}
+train_label_df <- read.csv(paste(path,'dengue_labels_train.csv',sep = ""),stringsAsFactors = F)
+test_label_df <- read.csv(paste(path,'submission_format.csv',sep = ""),stringsAsFactors = F)
+combine_label_df <- rbind(train_label_df,test_label_df)
+combine_df$total_cases <- combine_label_df$total_cases
+
+train_data_sj <- combine_df[1:1456,] %>% filter(city=='sj')
+train_data_iq <- combine_df[1:1456,] %>% filter(city=='iq')
+
+test_data_sj <- combine_df[1457:1872,] %>% filter(city=='sj')
+test_data_iq <- combine_df[1457:1872,] %>% filter(city=='iq')
+```
+
+Let's find the most important variable for the modelling
+We will use the Boruta package for this.
+
+##For city SJ
+
+```{r}
+set.seed(13)
+bor.results <- Boruta(train_data_sj[,-c(1,4,25)],train_data_sj$total_cases,maxRuns=101,doTrace=0)
+bor.results$finalDecision
+
+plot(bor.results)
+
+
+```
+
+Segregate the variables as per their importance 
+
+```{r}
+
+CONFIRMED_ATTR_SJ <- c('year','weekofyear','ndvi_nw','ndvi_ne','ndvi_sw','ndvi_se','precipitation_amt_mm','reanalysis_air_temp_k',
+                    'reanalysis_avg_temp_k','reanalysis_dew_point_temp_k','reanalysis_max_air_temp_k','reanalysis_min_air_temp_k',
+                    'reanalysis_precip_amt_kg_per_m2','reanalysis_relative_humidity_percent','reanalysis_specific_humidity_g_per_kg',
+                    'station_avg_temp_c','station_max_temp_c','station_min_temp_c','station_precip_mm')
+
+TENTATIVE_ATTR_SJ <- c('reanalysis_tdtr_k','reanalysis_sat_precip_amt_mm','station_diur_temp_rng_c')
+
+PREDICTOR_ATTR_SJ <- c(CONFIRMED_ATTR_SJ,TENTATIVE_ATTR_SJ)
+
+# create folds for training
+set.seed(13)
+data_folds_sj <- createFolds(train_data_sj$total_case, k=5)
+
+```
+
+```{r}
+set.seed(13)
+bor.results <- Boruta(train_data_iq[,-c(1,4,25)],train_data_iq$total_cases,maxRuns=101,doTrace=0)
+bor.results$finalDecision
+
+plot(bor.results)
+```
+
+```{r}
+CONFIRMED_ATTR_IQ <- c('year','weekofyear','reanalysis_air_temp_k',
+                    'reanalysis_avg_temp_k','reanalysis_dew_point_temp_k','reanalysis_min_air_temp_k','reanalysis_tdtr_k',
+                    'reanalysis_precip_amt_kg_per_m2','reanalysis_relative_humidity_percent','reanalysis_specific_humidity_g_per_kg',
+                    'station_avg_temp_c','station_max_temp_c')
+
+TENTATIVE_ATTR_IQ <- c('precipitation_amt_mm','reanalysis_max_air_temp_k','reanalysis_sat_precip_amt_mm','station_diur_temp_rng_c','station_min_temp_c')
+REJECTED_ATTR_IQ <- c('ndvi_nw','ndvi_ne','ndvi_sw','ndvi_se','station_precip_mm')
+
+
+PREDICTOR_ATTR_IQ <- c(CONFIRMED_ATTR_IQ,TENTATIVE_ATTR_IQ,REJECTED_ATTR_IQ)
+
+# create folds for training
+set.seed(13)
+data_folds_iq <- createFolds(train_data_iq$total_cases, k=5)
+```
+
+Once we have found every important features, next we will try to use model
+For modelling we are going to use, gbm and xgboost.
+Both of these models are present in CARAT.
+So we will pre-process the data as per cARAT package.
+We will add a new column- ID which is just a number to the row
+
+```{r}
+train_data_sj$Id <- seq.int(nrow(train_data_sj))
+train_data_iq$Id <- seq.int(nrow(train_data_iq))
+test_data_sj$Id <- seq.int(nrow(test_data_sj))+936
+test_data_iq$Id <- seq.int(nrow(test_data_iq))+520
+
+```
+
+
+```{r}
+# Feature Set 1 - Boruta Confirmed and tentative Attributes
+prepL0FeatureSet1_sj <- function(df) {
+    
+    id <- df$Id
+    #print(head(id))
+    if (class(df$total_cases) != "NULL") {
+        y <- df$total_cases
+    } else {
+        y <- NULL
+    }
+  
+    predictor_vars <- c(CONFIRMED_ATTR_SJ,TENTATIVE_ATTR_SJ)
+    
+    predictors <- df[predictor_vars]
+    
+    return(list(id=id,y=y,predictors=predictors))
+}
+
+L0FeatureSet1_sj <- list(train=prepL0FeatureSet1_sj(train_data_sj),test=prepL0FeatureSet1_sj(test_data_sj))
+#print(head(L0FeatureSet1_sj$train$Id))
+
+prepL0FeatureSet1_iq <- function(df) {
+    
+    id <- df$Id
+    #print(head(id))
+    if (class(df$total_cases) != "NULL") {
+        y <- df$total_cases
+    } else {
+        y <- NULL
+    }
+  
+    predictor_vars <- c(CONFIRMED_ATTR_IQ,TENTATIVE_ATTR_IQ)
+    
+    predictors <- df[predictor_vars]
+    
+    return(list(id=id,y=y,predictors=predictors))
+}
+
+L0FeatureSet1_iq <- list(train=prepL0FeatureSet1_iq(train_data_iq),test=prepL0FeatureSet1_iq(test_data_iq))
+```
+
+Following is the common training function that we will use to train our model.
+
+
+```{r}
+#library(Metrics)
+#train model on one data fold
+trainOneFold <- function(this_fold,feature_set) {
+    # get fold specific cv data
+    #print('Inside trainOneFold')
+    cv.data <- list()
+    cv.data$predictors <- feature_set$train$predictors[this_fold,]
+    cv.data$ID <- feature_set$train$id[this_fold]
+    cv.data$y <- feature_set$train$y[this_fold]
+    
+    #print('Crossed CV')
+    # get training data for specific fold
+    train.data <- list()
+    train.data$predictors <- feature_set$train$predictors[-this_fold,]
+    train.data$y <- feature_set$train$y[-this_fold]
+    #print('Crossed train')
+    #print(head(train.data$y))
+    
+    set.seed(825)
+    fitted_mdl <- do.call(train,
+                          c(list(x=train.data$predictors,y=train.data$y),
+                        CARET.TRAIN.PARMS,
+                        MODEL.SPECIFIC.PARMS,
+                        CARET.TRAIN.OTHER.PARMS))
+    
+    yhat <- predict(fitted_mdl,newdata = cv.data$predictors,type = "raw")
+    
+    score <- rmse(cv.data$y,yhat)
+    
+    ans <- list(fitted_mdl=fitted_mdl,
+                score=score,
+                predictions=data.frame(ID=cv.data$ID,yhat=yhat,y=cv.data$y))
+    
+    return(ans)
+    
+}
+
+# make prediction from a model fitted to one fold
+makeOneFoldTestPrediction <- function(this_fold,feature_set) {
+    fitted_mdl <- this_fold$fitted_mdl
+    
+    yhat <- predict(fitted_mdl,newdata = feature_set$test$predictors,type = "raw")
+    
+    return(yhat)
+}
+
+```
+
+The below section will do the followinf tasks:
+1. Define the basic parameters of gbm model
+2. Tune the parametrs
+3. Train the models for the two cities separately
+4. Show the RMSE calted error for teh model
+
+```{r}
+
+# set caret training parameters
+CARET.TRAIN.PARMS <- list(method="gbm")   
+
+CARET.TUNE.GRID <-  expand.grid(n.trees=100, 
+                                interaction.depth=10, 
+                                shrinkage=0.1,
+                                n.minobsinnode=10)
+
+MODEL.SPECIFIC.PARMS <- list(verbose=0) #NULL # Other model specific parameters
+
+# model specific training parameter
+CARET.TRAIN.CTRL <- trainControl(method="none",
+                                 verboseIter=FALSE,
+                                 classProbs=FALSE)
+
+CARET.TRAIN.OTHER.PARMS <- list(trControl=CARET.TRAIN.CTRL,
+                           tuneGrid=CARET.TUNE.GRID,
+                           metric="RMSE")
+
+# generate features for Level 1
+gbm_set_sj <- llply(data_folds_sj,trainOneFold,L0FeatureSet1_sj)
+gbm_set_iq <- llply(data_folds_iq,trainOneFold,L0FeatureSet1_iq)
+# final model fit
+gbm_mdl_sj <- do.call(train,
+                 c(list(x=L0FeatureSet1_sj$train$predictors,y=L0FeatureSet1_sj$train$y),
+                 CARET.TRAIN.PARMS,
+                 MODEL.SPECIFIC.PARMS,
+                 CARET.TRAIN.OTHER.PARMS))
+
+# CV Error Estimate
+cv_y <- do.call(c,lapply(gbm_set_sj,function(x){x$predictions$y}))
+cv_yhat <- do.call(c,lapply(gbm_set_sj,function(x){x$predictions$yhat}))
+rmse(cv_y,cv_yhat)
+
+cat("Average CV rmse for sj:",mean(do.call(c,lapply(gbm_set_sj,function(x){x$score}))))
+
+print('')
+print('###############################################################')
+
+print('city iq:')
+# final model fit
+gbm_mdl_iq <- do.call(train,
+                 c(list(x=L0FeatureSet1_iq$train$predictors,y=L0FeatureSet1_iq$train$y),
+                 CARET.TRAIN.PARMS,
+                 MODEL.SPECIFIC.PARMS,
+                 CARET.TRAIN.OTHER.PARMS))
+
+# CV Error Estimate
+cv_y <- do.call(c,lapply(gbm_set_iq,function(x){x$predictions$y}))
+cv_yhat <- do.call(c,lapply(gbm_set_iq,function(x){x$predictions$yhat}))
+rmse(cv_y,cv_yhat)
+
+cat("Average CV rmse for iq:",mean(do.call(c,lapply(gbm_set_iq,function(x){x$score}))))
+
+```
+
+```{r}
+test_gbm_yhat_sj <- round(predict(gbm_mdl_sj,newdata = L0FeatureSet1_sj$test$predictors,type = "raw"))
+test_gbm_yhat_iq <- round(predict(gbm_mdl_iq,newdata = L0FeatureSet1_iq$test$predictors,type = "raw"))
+test_gbm_yhat <- c(test_gbm_yhat_sj,test_gbm_yhat_iq)
+submission <- read.csv(paste(path,'submission_format.csv',sep = ""),stringsAsFactors = F)
+submission$total_cases <- test_gbm_yhat
+head(submission)
+write.csv(submission,paste(path,'final_gbm_1.csv',sep = ""),row.names=F,quote = F)
+```
+
+The next model we are going to use is - "XGBoost".
+This model needs data in matrix form. So we will change our pre-processing model
+
+```{r}
+# Feature Set 2 (xgboost) - Boruta Confirmed Attributes
+prepL0FeatureSet2_sj <- function(df) {
+    id <- df$Id
+    #print(head(id))
+    if (class(df$total_cases) != "NULL") {
+        y <- df$total_cases
+    } else {
+        y <- NULL
+    }
+  
+    predictor_vars <- c(CONFIRMED_ATTR_SJ,TENTATIVE_ATTR_SJ)
+    
+    predictors <- df[predictor_vars]
+    return(list(id=id,y=y,predictors=as.matrix(predictors)))
+}
+
+L0FeatureSet2_sj <- list(train=prepL0FeatureSet2_sj(train_data_sj),test=prepL0FeatureSet2_sj(test_data_sj))
+#print(head(L0FeatureSet1_sj$train$Id))
+
+prepL0FeatureSet2_iq <- function(df) {
+    
+    id <- df$Id
+    #print(head(id))
+    if (class(df$total_cases) != "NULL") {
+        y <- df$total_cases
+    } else {
+        y <- NULL
+    }
+  
+    predictor_vars <- c(CONFIRMED_ATTR_IQ,TENTATIVE_ATTR_IQ)
+    
+    predictors <- df[predictor_vars]
+    
+    return(list(id=id,y=y,predictors=as.matrix(predictors)))
+}
+
+L0FeatureSet2_iq <- list(train=prepL0FeatureSet2_iq(train_data_iq),test=prepL0FeatureSet2_iq(test_data_iq))
+```
+
+Here again we will do the same thing as we did for gbm model.
+
+```{r}
+# set caret training parameters
+CARET.TRAIN.PARMS <- list(method="xgbTree")   
+
+CARET.TUNE.GRID <-  expand.grid(nrounds=800, 
+                                max_depth=10, 
+                                eta=0.03, 
+                                gamma=0.1, 
+                                colsample_bytree=0.4, 
+                                min_child_weight=1,
+                                subsample = 1)
+
+MODEL.SPECIFIC.PARMS <- list(verbose=0) #NULL # Other model specific parameters
+
+# model specific training parameter
+CARET.TRAIN.CTRL <- trainControl(method="none",
+                                 verboseIter=FALSE,
+                                 classProbs=FALSE)
+
+CARET.TRAIN.OTHER.PARMS <- list(trControl=CARET.TRAIN.CTRL,
+                           tuneGrid=CARET.TUNE.GRID,
+                           metric="RMSE")
+
+# generate Level 1 features
+xgb_set_sj <- llply(data_folds_sj,trainOneFold,L0FeatureSet2_sj)
+xgb_set_iq <- llply(data_folds_iq,trainOneFold,L0FeatureSet2_iq)
+
+# final model fit: city sj
+xgb_mdl_sj <- do.call(train,
+                 c(list(x=L0FeatureSet2_sj$train$predictors,y=L0FeatureSet2_sj$train$y),
+                 CARET.TRAIN.PARMS,
+                 MODEL.SPECIFIC.PARMS,
+                 CARET.TRAIN.OTHER.PARMS))
+
+# CV Error Estimate
+cv_y <- do.call(c,lapply(xgb_set_sj,function(x){x$predictions$y}))
+cv_yhat <- do.call(c,lapply(xgb_set_sj,function(x){x$predictions$yhat}))
+rmse(cv_y,cv_yhat)
+
+# final model fit : city iq
+xgb_mdl_iq <- do.call(train,
+                 c(list(x=L0FeatureSet2_iq$train$predictors,y=L0FeatureSet2_iq$train$y),
+                 CARET.TRAIN.PARMS,
+                 MODEL.SPECIFIC.PARMS,
+                 CARET.TRAIN.OTHER.PARMS))
+
+# CV Error Estimate
+cv_y <- do.call(c,lapply(xgb_set_iq,function(x){x$predictions$y}))
+cv_yhat <- do.call(c,lapply(xgb_set_iq,function(x){x$predictions$yhat}))
+rmse(cv_y,cv_yhat)
+
+```
+
+XGBoost- RMSE is an improvement on the gbm model.
+
+```{r}
+test_xgb_yhat_sj <- round(predict(xgb_mdl_sj,newdata = L0FeatureSet2_sj$test$predictors,type = "raw"))
+test_xgb_yhat_iq <- round(predict(xgb_mdl_iq,newdata = L0FeatureSet2_iq$test$predictors,type = "raw"))
+test_xgb_yhat <- c(test_xgb_yhat_sj,test_xgb_yhat_iq)
+
+##Lets check how this model looks like in plot
+plot(train_data_sj$total_cases,type="l",xlim=c(100,300))
+plot(test_xgb_yhat_sj,type="l",ylim=c(0,450),xlim=c(100,300),main='predicted')
+
+```
+Comparing the train data and the predicted data, it looks like the train data has a smoother curve.
+Lets try to make the predicted data a bit smoother.
+We can do that by using the simple moving average.
+
+```{r}
+fit_sj <- sma(test_xgb_yhat_sj)
+fit_iq <- sma(test_xgb_yhat_iq)
+test_xgb_yhat_sma <- c(as.numeric(fit_sj$fitted),as.numeric(fit_iq$fitted))
+plot(train_data_sj$total_cases,type="l",xlim=c(100,300))
+plot(test_xgb_yhat_sma,type="l",ylim=c(0,450),main="sma")
+
+```
+
+
+```{r}
+submission <- read.csv(paste(path,'submission_format.csv',sep = ""),stringsAsFactors = F)
+submission$total_cases <- round(test_xgb_yhat_sma)
+head(submission)
+write.csv(submission,paste(path,'final_xgboost_1.csv',sep = ""),row.names=F,quote = F)
+```
+
+Let's smooth the gbm model too
+
+```{r}
+plot(train_data_sj$total_cases,type="l",xlim=c(100,300))
+plot(test_gbm_yhat_sj,type="l",ylim=c(0,450),xlim=c(100,300),main='predicted')
+
+```
+```{r}
+fit_sj <- sma(test_gbm_yhat_sj)
+fit_iq <- sma(test_gbm_yhat_iq)
+test_gbm_yhat_sma <- c(as.numeric(fit_sj$fitted),as.numeric(fit_iq$fitted))
+plot(train_data_sj$total_cases,type="l",xlim=c(100,300))
+plot(test_gbm_yhat_sma,type="l",ylim=c(0,450),main="sma")
+
+submission <- read.csv(paste(path,'submission_format.csv',sep = ""),stringsAsFactors = F)
+submission$total_cases <- round(test_gbm_yhat_sma)
+head(submission)
+write.csv(submission,paste(path,'final_gbm_2.csv',sep = ""),row.names=F,quote = F)
+
+```
+GBM with smoothing was not an improvement.
+But xgboost with Moving average smoothing was an improvement- MAE: 25.73
+
+-------------------------------------------------------------------------
+
+For the last part let's try the xgboost model directly from xgboost package
+
+```{r}
+library(xgboost)
+
+sj_dtrain = xgb.DMatrix(as.matrix(train_data_sj[,c(CONFIRMED_ATTR_SJ,TENTATIVE_ATTR_SJ)]), label = train_data_sj$total_cases)
+sj_dtest = xgb.DMatrix(as.matrix(test_data_sj[,c(CONFIRMED_ATTR_SJ,TENTATIVE_ATTR_SJ)]))
+
+iq_dtrain = xgb.DMatrix(as.matrix(train_data_iq[,c(CONFIRMED_ATTR_IQ,TENTATIVE_ATTR_IQ)]), label = train_data_iq$total_cases)
+iq_dtest = xgb.DMatrix(as.matrix(test_data_iq[,c(CONFIRMED_ATTR_IQ,TENTATIVE_ATTR_IQ)]))
+
+cv.ctrl = trainControl(method = "repeatedcv", repeats = 1,number = 4, allowParallel=T)
+
+xgb.grid = expand.grid(nrounds = 750,
+    eta = c(0.01,0.005,0.001),
+    max_depth = c(4,6,8),
+    colsample_bytree=c(0,1,10),
+    min_child_weight = 2,
+    subsample=c(0,0.2,0.4,0.6),
+    gamma=0.01)
+set.seed(45)
+xgb_params = list(
+  booster = 'gbtree',
+  objective = 'reg:linear',
+  colsample_bytree=1,
+  eta=0.005,
+  max_depth=4,
+  min_child_weight=3,
+  alpha=0.3,
+  lambda=0.4,
+  gamma=0.01, # less overfit
+  subsample=0.6,
+  seed=5,
+  silent=TRUE)
+#xgb.cv(xgb_params, sj_dtrain, nrounds = 5000, nfold = 4, early_stopping_rounds = 500)
+bst_sj = xgb.train(xgb_params,sj_dtrain, nrounds = 1000)
+bst_iq = xgb.train(xgb_params,iq_dtrain, nrounds = 1000)
+
+```
+
+```{r}
+test_xgb_yhat_sj <- round(predict(bst_sj,newdata = sj_dtest,type = "raw"))
+test_xgb_yhat_iq <- round(predict(bst_iq,newdata = iq_dtest,type = "raw"))
+test_xgb_yhat <- c(test_xgb_yhat_sj,test_xgb_yhat_iq)
+
+plot(train_data_sj$total_cases,type="l",xlim=c(100,300))
+plot(test_xgb_yhat_sj,type="l",ylim=c(0,450),xlim=c(100,300),main='predicted')
+
+fit_sj <- sma(test_xgb_yhat_sj)
+fit_iq <- sma(test_xgb_yhat_iq)
+test_xgb_yhat_sma <- c(as.numeric(fit_sj$fitted),as.numeric(fit_iq$fitted))
+plot(test_xgb_yhat_sma,type="l",ylim=c(0,450),main="sma")
+
+submission <- read.csv(paste(path,'submission_format.csv',sep = ""),stringsAsFactors = F)
+submission$total_cases <- round(test_xgb_yhat_sma)
+head(submission)
+write.csv(submission,paste(path,'final_xgboost_2.csv',sep = ""),row.names=F,quote = F)
+```
+This model worked best. MAE: 25.3462
